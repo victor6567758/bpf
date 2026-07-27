@@ -1,0 +1,22 @@
+# Tshark-only image for side-by-side decoding. Writes two artifacts into
+# the shared ./output volume:
+#   capture.pcap  - raw capture, open this in Wireshark's GUI
+#   decoded.txt   - tshark's human-readable decode of the same packets
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tshark iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Tshark uses AF_PACKET. The XDP program returns XDP_PASS, so packets keep
+# flowing through the stack and tshark sees them downstream of XDP - no
+# conflict with the BPF logger that's also attached to veth0.
+
+WORKDIR /work
+COPY scripts/wireshark-entrypoint.sh /work/scripts/wireshark-entrypoint.sh
+RUN chmod +x /work/scripts/wireshark-entrypoint.sh
+
+# Capture + decode sidecar: writes capture.pcap and decoded.txt into the
+# shared output volume. On `docker compose down` the trap decodes whatever
+# was captured before exiting.
+CMD ["/work/scripts/wireshark-entrypoint.sh"]
