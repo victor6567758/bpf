@@ -1,44 +1,28 @@
 cmake_minimum_required(VERSION 3.16)
-project(ebpf_packet_logger C)
+project(bpf_monorepo C)
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+# This is the common/top-level build. It pulls each independent subproject in
+# via add_subdirectory(). Each part owns its own CMakeLists.txt and can also
+# be built standalone (see partN-*/CMakeLists.txt comments).
+#
+# Top-level usage from the repo root:
+#   cmake -S . -B build && cmake --build build -j
+#
+# Each subproject's targets are namespaced under their directory name, e.g.:
+#   part1-ebpf-logger::packet_logger
+#
+# NOTE on part1: building the BPF program requires clang with the bpf target
+# and bpftool, which are only available inside its container (or a host with
+# the full eBPF toolchain). If those are missing, configure will fail at the
+# subproject level. For day-to-day work prefer `make up` in part1-ebpf-logger/
+# (which builds in-container). This top-level configure is mainly useful when
+# you have the toolchain installed natively or via CLion's Docker toolchain.
 
-find_program(CLANG_BIN clang REQUIRED)
-find_program(BPFTOOL_BIN bpftool REQUIRED)
+# part1: the existing eBPF XDP packet logger (kernel + userspace loader).
+add_subdirectory(part1-ebpf-logger)
 
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
-
-set(BPF_SRC   ${CMAKE_SOURCE_DIR}/bpf/xdp_logger.bpf.c)
-set(BPF_OBJ   ${CMAKE_BINARY_DIR}/xdp_logger.bpf.o)
-set(BPF_SKEL  ${CMAKE_BINARY_DIR}/xdp_logger.skel.h)
-
-# 1. Compile the BPF C source into a BPF ELF object with clang targeting bpf.
-add_custom_command(
-        OUTPUT ${BPF_OBJ}
-        COMMAND ${CLANG_BIN}
-        -g -O2 -target bpf -I/usr/include/x86_64-linux-gnu
-        -c ${BPF_SRC} -o ${BPF_OBJ}
-        DEPENDS ${BPF_SRC} ${CMAKE_SOURCE_DIR}/bpf/packet_event.h
-        COMMENT "Compiling XDP BPF object"
-        VERBATIM
-)
-
-# 2. Generate a libbpf skeleton header from the compiled object. The
-#    skeleton gives the loader typed access to skel->progs.* / skel->maps.*
-add_custom_command(
-        OUTPUT ${BPF_SKEL}
-        COMMAND ${BPFTOOL_BIN} gen skeleton ${BPF_OBJ} > ${BPF_SKEL}
-        DEPENDS ${BPF_OBJ}
-        COMMENT "Generating libbpf skeleton"
-        VERBATIM
-)
-
-add_custom_target(bpf_skeleton DEPENDS ${BPF_SKEL})
-
-# 3. Userspace loader
-add_executable(packet_logger src/loader.c)
-add_dependencies(packet_logger bpf_skeleton)
-target_include_directories(packet_logger PRIVATE ${CMAKE_BINARY_DIR} ${LIBBPF_INCLUDE_DIRS})
-target_link_libraries(packet_logger PRIVATE PkgConfig::LIBBPF elf z)
+# part2: postgres-backed sink for captured packet events. Currently a
+# placeholder library/target so the common build stays green while the real
+# implementation is developed. It deliberately avoids any host toolchain
+# requirements beyond a C compiler.
+add_subdirectory(part2-postgres-sink)

@@ -1,0 +1,140 @@
+# part2-postgres-sink: XDP capture of Postgres wire traffic.
+#
+# Four services, all sharing the host network namespace so traffic between
+# the psql client and postgres crosses `lo`, where the XDP capture is attached:
+#
+#   postgres  - the DB we capture from (ssl=off so payloads are plaintext)
+#   capture   - builds + runs capture_loader, attaches XDP to lo, writes pcap
+#   wireshark - idle tshark sidecar; decodes the pcap to text on shutdown
+#   db-client - one-shot helper that generates traffic for the capture
+#
+# Run from this directory: `make up`, `make logs`, `make down`.
+# See README.md for what ends up in ./output/.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: bpf-postgres
+    restart: unless-stopped
+    # All services share the host netns so their mutual traffic crosses lo,
+    # which is where the XDP program attaches. (Ports mapping is ignored
+    # under network_mode: host but kept for documentation.)
+    network_mode: host
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-packets}
+      POSTGRES_USER: ${POSTGRES_USER:-packets}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-packets}
+      # Force SSL off so the wire protocol is plaintext and tshark's pgsql
+      # dissector can decode it.
+      POSTGRES_HOST_SSL_METHOD: disable
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-packets} -d ${POSTGRES_DB:-packets}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  capture:
+    build:
+      context: .
+      dockerfile: Dockerfile.core
+    image: bpf-pg-capture
+    container_name: bpf-pg-capture
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Loading BPF programs and attaching XDP requires elevated privileges.
+    # `privileged: true` is the simplest path; for production you'd instead
+    # grant just CAP_BPF, CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_ADMIN.
+    privileged: true
+    network_mode: host
+    # Give the entrypoint's SIGTERM trap time to detach the XDP program
+    # before Docker sends SIGKILL.
+    stop_grace_period: 5s
+    init: true
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys/fs/bpf:/sys/fs/bpf
+      - ./output:/work/output
+    environment:
+      IFACE: "lo"
+      LOG: "/work/output/pg_capture.pcap"
+      PG_HOST: "127.0.0.1"
+      PG_PORT: "5432"
+      PG_USER: "${POSTGRES_USER:-packets}"
+      PG_DB: "${POSTGRES_DB:-packets}"
+      PG_PASSWORD: "${POSTGRES_PASSWORD:-packets}"
+      # Set to "1" to exit after the startup probe instead of streaming forever.
+      EXIT_AFTER_PROBE: "0"
+      # Hand ownership of output artifacts to this host uid/gid.
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Tshark sidecar: idle until shutdown, then decodes the XDP capture's
+  # pg_capture.pcap into pg_decoded.txt. Kept as its own image so tshark
+  # (and its many deps) stay out of the privileged capture container.
+  # It does NOT run a parallel capture; there is only one pcap file.
+  wireshark:
+    build:
+      context: .
+      dockerfile: Dockerfile.wireshark
+    image: bpf-pg-wireshark
+    container_name: bpf-pg-wireshark
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 5s
+    volumes:
+      - ./output:/work/output
+    environment:
+      OUT_DIR: "/work/output"
+      CAPTURE_FILE: "/work/output/pg_capture.pcap"
+      DECODED_FILE: "/work/output/pg_decoded.txt"
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # One-shot helper: runs a handful of queries against postgres to generate
+  # traffic for the capture. Not started by `up`; invoke explicitly:
+  #   make traffic        # docker compose run --rm db-client
+  db-client:
+    image: postgres:16
+    container_name: bpf-pg-db-client
+    depends_on:
+      postgres:
+        condition: service_healthy
+    network_mode: host
+    environment:
+      PGHOST: "127.0.0.1"
+      PGPORT: "5432"
+      PGUSER: "${POSTGRES_USER:-packets}"
+      PGDATABASE: "${POSTGRES_DB:-packets}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:-packets}"
+    # Run a small workload of SELECTs / DDL so the capture has varied Postgres
+    # protocol messages to decode. Override with your own script by binding
+    # ./scripts/queries.sql and changing the command.
+    command: >
+      psql -v ON_ERROR_STOP=1 -c "SELECT 'db-client start', now();"
+           -c "CREATE TABLE IF NOT EXISTS demo (id serial PRIMARY KEY, note text, ts timestamptz DEFAULT now());"
+           -c "INSERT INTO demo (note) VALUES ('hello from db-client'), ('another row'), ('third');"
+           -c "SELECT id, note, ts FROM demo ORDER BY id DESC LIMIT 5;"
+           -c "SELECT count(*) AS total FROM demo;"
+           -c "SELECT 'db-client done', now();"
+    profiles: ["manual"]
+
+volumes:
+  pgdata:
+    name: bpf-postgres-data
