@@ -1,9 +1,3 @@
-// loader.c
-//
-// Loads xdp_capture.bpf.o, attaches it to the given interface, and writes
-// every captured packet to a standard pcap file (readable directly in
-// Wireshark/tcpdump). Ctrl+C to stop; detaches cleanly on exit.
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,9 +36,6 @@ static void handle_sigint(int sig)
     stop = 1;
 }
 
-// docker compose down sends SIGTERM (not SIGINT). Without this handler the
-// loader would be killed after stop_grace_period without detaching XDP,
-// leaving the program attached to the interface.
 static void install_signal_handlers(void)
 {
     struct sigaction sa = {0};
@@ -52,7 +43,7 @@ static void install_signal_handlers(void)
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-    signal(SIGPIPE, SIG_IGN);   // writes to a closed pcap should not kill us
+    signal(SIGPIPE, SIG_IGN);
 }
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
@@ -109,7 +100,7 @@ int main(int argc, char **argv)
         .thiszone = 0,
         .sigfigs = 0,
         .snaplen = CAPTURE_LEN,
-        .network = 1, // LINKTYPE_ETHERNET
+        .network = 1,
     };
     fwrite(&hdr, sizeof(hdr), 1, outfile);
 
@@ -149,7 +140,7 @@ int main(int argc, char **argv)
     printf("press Ctrl+C to stop\n");
 
     while (!stop) {
-        ring_buffer__poll(rb, 100 /* ms timeout */);
+        ring_buffer__poll(rb, 100);
     }
 
     printf("\ndetaching and closing %ld packets captured\n", packet_count);

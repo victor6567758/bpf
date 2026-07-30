@@ -1,9 +1,3 @@
-# eBPF capture image for part2-postgres-sink.
-#
-# Single-stage build is enough here (unlike part1, which source-builds
-# bpftool): debian ships a libbpf-dev + clang recent enough to compile the
-# XDP program, and bpftool isn't needed because loader.c opens the object
-# file directly instead of going through a libbpf skeleton.
 FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,9 +17,6 @@ COPY . .
 
 RUN cmake -B build . && cmake --build build -j
 
-# --- runtime ---------------------------------------------------------------
-# Same base image, slimmer: just what the loader needs to run + the entrypoint
-# needs to wait for postgres and probe it.
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,10 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY --from=build /src/build/capture_loader ./capture_loader
 COPY --from=build /src/build/xdp_capture.bpf.o ./xdp_capture.bpf.o
-COPY scripts/capture-entrypoint.sh /usr/local/bin/capture-entrypoint
-RUN chmod +x /usr/local/bin/capture-entrypoint
+COPY scripts/capture-entrypoint.sh ./scripts/capture-entrypoint.sh
+RUN chmod +x ./scripts/capture-entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/capture-entrypoint"]
-# usage: docker run --privileged --network host \
-#          -v $(pwd)/output:/work/output bpf-pg-capture
-# The entrypoint waits for postgres itself; no args needed.
+ENTRYPOINT ["/app/scripts/capture-entrypoint.sh"]

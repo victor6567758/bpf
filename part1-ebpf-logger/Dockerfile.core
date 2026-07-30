@@ -1,7 +1,3 @@
-# eBPF dev/runtime image: clang/llvm (BPF backend), libbpf, and a
-# source-built bpftool (the distro package is tied to an exact kernel
-# version, which breaks inside containers - building it ourselves avoids
-# that entirely).
 FROM ubuntu:24.04 AS bpftool-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,7 +10,6 @@ RUN git clone --depth 1 https://github.com/libbpf/bpftool.git /tmp/bpftool \
     && cd src && make -j"$(nproc)" \
     && install -m 0755 bpftool /usr/local/bin/bpftool
 
-# ---------------------------------------------------------------------------
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -28,11 +23,6 @@ COPY --from=bpftool-builder /usr/local/bin/bpftool /usr/local/bin/bpftool
 WORKDIR /work
 COPY . /work
 
-# Make the in-container scripts executable. (chmod at COPY time isn't
-# preserved reliably across build contexts, so we enforce them here.)
 RUN chmod +x /work/scripts/core-entrypoint.sh /work/scripts/send-traffic.sh
 
-# One command does it all: create veth pair, build, attach XDP logger, send
-# test traffic, stream the log. On `docker compose down` the container
-# receives SIGTERM and the entrypoint's trap cleans everything up.
 CMD ["/work/scripts/core-entrypoint.sh"]

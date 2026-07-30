@@ -4,25 +4,18 @@ services:
       context: .
       dockerfile: Dockerfile.core
     container_name: ebpf-packet-logger
-    # Loading BPF programs and attaching XDP requires elevated privileges.
-    # `privileged: true` is the simplest path; for production you'd instead
-    # grant just CAP_BPF, CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_ADMIN.
     privileged: true
     network_mode: host
-    # Give the entrypoint's SIGTERM trap time to detach the XDP program and
-    # delete the veth pair before Docker sends SIGKILL.
     stop_grace_period: 5s
     init: true
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug:ro
       - /sys/fs/bpf:/sys/fs/bpf
       - ./output:/work/output
-      # Bind-mount scripts so edits apply live without an image rebuild.
       - ./scripts:/work/scripts
       - ./src:/work/src
       - ./bpf:/work/bpf
     environment:
-      # Override any of these to retarget the demo.
       VETH0: "veth0"
       VETH1: "veth1"
       VETH0_IP: "10.0.0.1/24"
@@ -31,18 +24,11 @@ services:
       VETH1_IP_NO_MASK: "10.0.0.2"
       PEER_NS: "bpfpeer"
       TEST_ON_START: "1"
-      # Set to "1" to exit after the startup burst instead of streaming
-      # forever. Useful for one-shot runs.
       EXIT_AFTER_TEST: "0"
       LOG: "/work/output/packets.log"
-      # Hand ownership of output artifacts to this host uid/gid so you can
-      # manage them without sudo. Defaults to 1000:1000 via .env / Makefile.
       HOST_UID: "${HOST_UID:-1000}"
       HOST_GID: "${HOST_GID:-1000}"
 
-  # Tshark sidecar: captures the same veth0 traffic to capture.pcap and, on
-  # shutdown, decodes it to decoded.txt. Runs alongside the XDP logger without
-  # conflict (XDP_PASS keeps packets flowing; tshark taps via AF_PACKET).
   wireshark:
     build:
       context: .
@@ -50,9 +36,9 @@ services:
     container_name: ebpf-wireshark
     depends_on:
       - packet-logger
-    # Shares the host netns so it sees the veth pair created by packet-logger.
+
     network_mode: host
-    # dumpcap needs CAP_NET_RAW (and CAP_NET_ADMIN for promisc mode).
+
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -65,7 +51,6 @@ services:
       OUT_DIR: "/work/output"
       CAPTURE_FILE: "/work/output/capture.pcap"
       DECODED_FILE: "/work/output/decoded.txt"
-      # Optional capture filter, e.g. "ip" or "udp port 9123". Empty = all.
       FILTER: ""
       HOST_UID: "${HOST_UID:-1000}"
       HOST_GID: "${HOST_GID:-1000}"

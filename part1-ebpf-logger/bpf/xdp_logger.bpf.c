@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-// XDP program: inspects every packet on the attached interface, extracts a
-// small summary (protocol, src/dst IP, ports, length) and pushes it to
-// userspace through a BPF ring buffer. Does NOT drop or modify traffic.
-
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
@@ -15,8 +10,6 @@
 
 #include "packet_event.h"
 
-// Ring buffer used to stream events to userspace. 256KB is plenty for a
-// demo/logging workload; bump it if the consumer can fall behind bursts.
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 18);
@@ -32,8 +25,6 @@ int xdp_logger(struct xdp_md *ctx)
     if ((void *)(eth + 1) > data_end)
         return XDP_PASS;
 
-    // Only interested in IPv4 for this demo; everything else passes through
-    // untouched.
     if (eth->h_proto != bpf_htons(ETH_P_IP))
         return XDP_PASS;
 
@@ -43,7 +34,7 @@ int xdp_logger(struct xdp_md *ctx)
 
     struct packet_event *evt = bpf_ringbuf_reserve(&events, sizeof(*evt), 0);
     if (!evt)
-        return XDP_PASS; // ring buffer full - drop the log, keep the packet
+        return XDP_PASS;
 
     evt->timestamp_ns = bpf_ktime_get_ns();
     evt->src_ip       = ip->saddr;
@@ -53,7 +44,6 @@ int xdp_logger(struct xdp_md *ctx)
     evt->src_port     = 0;
     evt->dst_port     = 0;
 
-    // Best-effort port extraction for TCP/UDP; bounds-checked for the verifier.
     if (ip->protocol == IPPROTO_TCP) {
         struct tcphdr *tcp = (void *)ip + (ip->ihl * 4);
         if ((void *)(tcp + 1) <= data_end) {
@@ -70,8 +60,6 @@ int xdp_logger(struct xdp_md *ctx)
 
     bpf_ringbuf_submit(evt, 0);
 
-    // XDP_PASS: we only observe traffic here. Switch to XDP_DROP for
-    // specific conditions if you want to actually filter/block packets.
     return XDP_PASS;
 }
 

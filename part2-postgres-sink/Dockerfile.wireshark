@@ -1,9 +1,3 @@
-# Tshark-only image for decoding the XDP capture's pcap.
-#
-# This image does NOT capture anything itself. The `capture` service writes
-# pg_capture.pcap; on shutdown this sidecar runs `tshark -r ... -V` to
-# produce pg_decoded.txt. Tshark (and libwiretap) are heavy, so they live
-# in their own image rather than bloating the privileged capture container.
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,6 +8,4 @@ WORKDIR /work
 COPY scripts/wireshark-entrypoint.sh /work/scripts/wireshark-entrypoint.sh
 RUN chmod +x /work/scripts/wireshark-entrypoint.sh
 
-# Decode-only sidecar: on shutdown, reads ./output/pg_capture.pcap (written by
-# the capture service) and writes ./output/pg_decoded.txt.
 CMD ["/work/scripts/wireshark-entrypoint.sh"]

@@ -1,12 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-// Userspace loader for xdp_logger.bpf.c
-//
-// - Loads and attaches the XDP program to a network interface (given by
-//   name, e.g. "eth0").
-// - Polls the BPF ring buffer for events and appends a line per packet to
-//   an output file (default: ./output/packets.log).
-// - Exits cleanly and detaches the program on Ctrl-C / SIGTERM.
-
 #include <arpa/inet.h>
 #include <errno.h>
 #include <net/if.h>
@@ -35,7 +26,7 @@ static void handle_signal(int sig)
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
     if (level == LIBBPF_DEBUG)
-        return 0; // keep the demo output readable
+        return 0;
     return vfprintf(stderr, format, args);
 }
 
@@ -49,7 +40,6 @@ static const char *proto_name(uint8_t proto)
     }
 }
 
-// Called by ring_buffer__poll() for every event the kernel side submits.
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
     (void)ctx;
@@ -72,7 +62,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
     fprintf(out_fp, "%s proto=%s %s:%u -> %s:%u len=%u\n",
             time_buf, proto_name(e->protocol),
             src_buf, e->src_port, dst_buf, e->dst_port, e->pkt_len);
-    fflush(out_fp); // flush so `tail -f` on the log file shows events live
+    fflush(out_fp);
 
     return 0;
 }
@@ -105,7 +95,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Could not open output file '%s': %s\n", out_path, strerror(errno));
         return 1;
     }
-    setvbuf(out_fp, NULL, _IOLBF, 0); // line-buffered
+    setvbuf(out_fp, NULL, _IOLBF, 0);
 
     libbpf_set_print(libbpf_print_fn);
 
@@ -140,7 +130,7 @@ int main(int argc, char **argv)
            ifname, ifindex, out_path);
 
     while (keep_running) {
-        int err = ring_buffer__poll(rb, 200 /* ms */);
+        int err = ring_buffer__poll(rb, 200 );
         if (err < 0 && err != -EINTR) {
             fprintf(stderr, "Error polling ring buffer: %d\n", err);
             break;
