@@ -1,25 +1,8 @@
-# Learning eBPF and Wireshark by Building: Two Hands-On Projects
+## Learning eBPF by Building Two Hands-On XDP Projects
 
-**eBPF** and **Wireshark** are each, on their own, sprawling topics.
-eBPF today covers networking (XDP, TC), tracing (kprobes, uprobes,
-tracepoints), security enforcement (LSM hooks, seccomp), and profiling -
-spanning dozens of hook types, several verifier generations, and an
-entire ecosystem (libbpf, BCC, bpftrace, Cilium) built on top of it.
-Wireshark, similarly, understands several thousand protocols, has its
-own C plugin API for writing new dissectors, and supports capture,
-filtering, and analysis workflows far beyond anything in this repo.
-Neither topic can be "covered" by one article, and this one doesn't try.
+eBPF on its own is a sprawling topic - it covers networking (XDP, TC), tracing (kprobes, uprobes, tracepoints), security enforcement (LSM hooks, seccomp), and profiling, spanning dozens of hook types, several verifier generations, and an entire ecosystem (libbpf, BCC, bpftrace, Cilium) built on top of it. No single article covers all of that, and this one doesn't try.
 
-**This is a two-part learning book built around two small, complete
-projects in this repo**, each teaching one narrow, well-defined slice of
-that larger space: attaching an **XDP program** - one specific eBPF hook,
-chosen because it's the earliest and simplest place to observe raw
-network traffic - to an interface, and pairing it with an independent
-**Wireshark/tshark capture** of the same traffic, so you can compare what
-a small hand-written kernel program sees against what a mature,
-general-purpose protocol analyzer sees. That comparison, run twice at
-two different levels of difficulty, is the entire arc of the book:
-
+This is a two-part learning book built around two small, complete eBPF projects in this repo, each teaching one narrow, well-defined slice of that larger space: writing, compiling, loading, and attaching an XDP program - one specific eBPF hook, chosen because it's the earliest and simplest place to observe raw network traffic - to an interface. Both parts are about eBPF: the kernel-side C program, the verifier, the map that carries data out, and the userspace loader that ties it all together. That progression, at two different levels of difficulty, is the entire arc of the book:
 - **Part 1 - `part1-ebpf-logger`** attaches to a veth pair between two
   network namespaces, parses Ethernet/IP/TCP/UDP headers by hand, and
   streams a one-line summary of every packet to a log file. It's the
