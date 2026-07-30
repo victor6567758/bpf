@@ -2319,23 +2319,68 @@ The previous good file (if any) remains intact until the rename succeeds.
 
 Docker containers run as root by default, so any file they create inside a
 bind-mounted `output/` directory ends up root-owned on the host - and
-`rm output/packets.log` starts demanding `sudo`. Every entrypoint in both
-projects fixes this by running `fix_perms` at three points:
+`rm output/packets.log` starts demanding `sudo`. Both projects' main
+loader entrypoints (`core-entrypoint.sh`, `capture-entrypoint.sh`) fix
+this by calling `fix_perms` at three points:
 
-1. **On startup**, before anything is written - so a leftover root-owned
-   file from a previous crashed run doesn't make the new run fail to
-   truncate/overwrite it.
-2. **Right after truncating the output file** (`: > "${LOG}"`) - so the
-   empty file is handed to the host user *before* the loader writes a
-   single byte.
-3. **In the cleanup trap**, as the very last step - so the final populated
-   file is chowned just before the container exits.
+1. **Immediately on startup**, before anything else runs - so the output
+   directory is host-owned from the very first line of the script, even
+   before the veth pair/namespace (Part 1) or the postgres-readiness wait
+   (Part 2) begins.
+2. **Right after truncating the output file** (`: > "${LOG}"`), before the
+   loader is started - so the freshly emptied file is re-handed to the
+   host user immediately, in case truncation reset its ownership.
+3. **In the cleanup trap**, as the last step before exit - so the final,
+   fully populated file is chowned once more just before the container
+   goes away.
 
 ```bash
 fix_perms() {
     [[ -d "${OUTPUT_DIR}" ]] && chown -R "${HOST_UID}:${HOST_GID}" "${OUTPUT_DIR}" 2>/dev/null || true
 }
+log "Fixing output permissions (${HOST_UID}:${HOST_GID})..."
+fix_perms
 ```
+
+The wireshark sidecars call `fix_perms` at **two** of those three points -
+early on startup and again in their cleanup trap - but skip the
+"after truncating" call, since neither sidecar truncates its own output
+file the way the main loaders do.
+
+That early chown has a side effect worth tracing through for Part 1's
+sidecar specifically. Because `fix_perms` now runs *before* `dumpcap`
+ever starts, the bind-mounted output directory is already host-owned by
+the time capture begins - and `dumpcap` has dropped the `CAP_DAC_OVERRIDE`
+capability as a hardening measure, so even running as root it's held to
+normal Unix permission rules, same as any unprivileged process. A root
+process without that capability can't create a file inside a directory
+it doesn't own. So `wireshark-entrypoint.sh` doesn't have `dumpcap` write
+into the (now host-owned) output directory at all - it captures to
+`/tmp/capture_tmp.pcap` instead, which is inside the container's own
+writable layer and untouched by the early chown:
+
+```bash
+rm -f "${CAPTURE_FILE}" "${TMP_CAPTURE}"
+dumpcap -i "${VETH0}" -q -w "${TMP_CAPTURE}" &
+```
+
+Then, in the cleanup trap, after `dumpcap` has been killed and its output
+flushed, a plain `cp` - which hasn't dropped any capabilities - copies the
+finished capture from `/tmp` into the bind-mounted output directory,
+where the trailing `fix_perms` call chowns it one last time:
+
+```bash
+if [[ -s "${TMP_CAPTURE}" ]]; then
+    cp -f "${TMP_CAPTURE}" "${CAPTURE_FILE}"
+fi
+decode
+fix_perms
+```
+
+Part 2's wireshark sidecar never hits this at all, because it never
+captures live traffic in the first place - it only reads an
+already-complete pcap with `tshark -r`, which does no capturing and
+never needs `CAP_DAC_OVERRIDE`.
 
 `HOST_UID` and `HOST_GID` come from the host's `id -u` / `id -g` and are
 exported by the Makefile:
@@ -2462,23 +2507,21 @@ different kinds of traffic (cross-namespace vs. same-host):
   generic mode, accept the performance trade-off, and let the kernel's
   synthesized hook do the work - Part 2's approach.
 
-### Why Part 1's wireshark sidecar captures to `/tmp` (and Part 2's doesn't capture at all)
+### Why Part 1's wireshark sidecar captures traffic itself (and Part 2's doesn't)
 
 The comparison table's "What the wireshark sidecar decodes" row hides a
 second, less obvious asymmetry: **Part 1's sidecar actively captures
 traffic itself**, while Part 2's sidecar sits completely idle until
 shutdown. That difference comes from how each project's BPF program
-writes its output, and it's the reason Part 1's
-`wireshark-entrypoint.sh` has a `/tmp` capture step Part 2's doesn't
-need.
+writes its output.
 
 **Part 1's BPF program writes a human-readable text log** - one line per
 packet with parsed IP/port/protocol fields. That's great for reading
 inline (`cat output/packets.log`), but it's *not* a pcap file, so if you
 want Wireshark's full protocol decode for comparison you need a
 completely separate capture from scratch. The sidecar does that with
-`dumpcap` (the same capture engine behind `tcpdump`), tapping `veth0`
-independently and writing its own `capture.pcap`.
+`dumpcap` (the same capture engine behind `tcpdump`/Wireshark itself),
+tapping `veth0` independently and writing its own `capture.pcap`.
 
 **Part 2's BPF program writes a pcap file directly** - the loader
 (`capture_loader`) writes the global pcap header and per-packet records
@@ -2486,46 +2529,26 @@ by hand, so the output (`pg_capture.pcap`) is already in exactly the
 format tshark expects. There's nothing for the sidecar to capture; it
 just decodes the existing pcap to text on shutdown.
 
-That architectural difference collides with a host-level security
-constraint in Part 1: on many Linux hosts, **AppArmor restricts
-`dumpcap` from writing to bind-mounted directories**. The wireshark
-container runs privileged with `CAP_NET_ADMIN`/`CAP_NET_RAW`, but
-AppArmor profiles on the *host* (outside the container's view) can still
-deny `dumpcap`'s file writes to paths under the bind-mounted
-`/work/output`. The symptom is a silent capture failure - `dumpcap`
-starts, attaches to `veth0`, and writes zero bytes because every
-`open()` on the output path returns `EACCES`.
-
-Part 1's workaround, visible in `wireshark-entrypoint.sh`, is to capture
-to `/tmp` (which is inside the container's own writable layer, never
-bind-mounted, and therefore never AppArmor-restricted) and copy the file
-to the bind-mounted output directory only at shutdown:
-
-```bash
-TMP_CAPTURE="/tmp/capture_tmp.pcap"
-
-# dumpcap writes here - inside the container's own layer, so AppArmor
-# (which restricts the bind-mounted /work/output) can't interfere:
-dumpcap -i "${VETH0}" -q -w "${TMP_CAPTURE}" &
-
-# ... on shutdown, in the cleanup trap:
-if [[ -s "${TMP_CAPTURE}" ]]; then
-    cp -f "${TMP_CAPTURE}" "${CAPTURE_FILE}"   # now copy to the bind mount
-fi
-```
-
-`cp` (unlike `dumpcap`) isn't on AppArmor's restricted list, so the
-copy succeeds where the original capture would have silently failed.
-Part 2 never hits this problem at all, because its sidecar never calls
-`dumpcap` - the pcap is written by `capture_loader`, a plain C program
-doing `fwrite()`, which AppArmor doesn't single out the way it singles
-out packet-capture tools.
+Part 1's live capture runs into a permission subtlety that's worth
+knowing about if you ever poke at `wireshark-entrypoint.sh`: it doesn't
+write straight to the bind-mounted `capture.pcap`, but to
+`/tmp/capture_tmp.pcap` first, copying the finished file over only in
+the cleanup trap. Section 13.6's "permission lifecycle" walkthrough
+covers exactly why - in short, `dumpcap` drops the `CAP_DAC_OVERRIDE`
+capability as a hardening measure, and by the time capture starts the
+output directory has already been chowned to the host user, so `dumpcap`
+(root, but without that capability) can no longer create a file there.
+Capturing to `/tmp` and letting a plain `cp` move it afterward sidesteps
+that entirely. Part 2's sidecar never hits this, because it never calls
+`dumpcap` in the first place - it only reads an already-complete pcap
+with `tshark -r`, which does no capturing and never needs
+`CAP_DAC_OVERRIDE`.
 
 This is a good example of how the same "observe traffic" goal can run
 into completely different operational constraints depending on which
-layer does the capturing: a dedicated capture tool (`dumpcap`) is more
-likely to trip a security profile than a general-purpose program that
-happens to write bytes to a file.
+tool does the capturing: a dedicated capture tool that hardens itself by
+dropping capabilities needs a different permission-ordering strategy than
+a general-purpose program that just calls `fwrite()`.
 
 ## Exercises: extending the Postgres capture
 
