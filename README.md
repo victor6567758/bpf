@@ -748,6 +748,14 @@ minimal alternative, worth knowing for anything beyond a demo:
 # Loading BPF programs and attaching XDP requires elevated privileges.
 # `privileged: true` is the simplest path; for production you'd instead
 # grant just CAP_BPF, CAP_NET_ADMIN, CAP_NET_RAW, CAP_SYS_ADMIN.
+services:
+  packet-logger:
+    build:
+      context: .
+      dockerfile: Dockerfile.core
+    container_name: ebpf-packet-logger
+    privileged: true
+...
 ```
 
 `CAP_BPF` (loading programs and creating maps), `CAP_NET_ADMIN` (creating
@@ -905,7 +913,7 @@ A line from `output/packets.log` looks like:
 2026-07-27 14:02:11 proto=TCP 10.0.0.1:51422 -> 10.0.0.2:443 len=60
 ```
 
-- exactly the fields `xdp_logger.bpf.c` filled into `struct packet_event`,
+exactly the fields `xdp_logger.bpf.c` filled into `struct packet_event`,
 formatted by `handle_event()` in the loader. Compare that against
 `output/decoded.txt`, tshark's full protocol decode of the *same* burst of
 packets, captured completely independently by the `wireshark` sidecar.
@@ -1943,18 +1951,17 @@ CMD ["/work/scripts/wireshark-entrypoint.sh"]
 Just tshark on Ubuntu. The decode happens on shutdown via the entrypoint
 trap.
 
-#### tshark command reference
 
-The Makefile exposes three tshark invocations:
+The Makefile exposes some tshark invocations:
 
-**1. Full verbose decode** (used by `make down` and `make decode`):
+**Full verbose decode** (used by `make down` and `make decode`):
 ```bash
 tshark -r /work/output/pg_capture.pcap -V
 ```
 - `-r <file>` - read from pcap (no live capture)
 - `-V` - verbose: full protocol tree decode per packet
 
-**2. SQL extraction** (`make sql`):
+**SQL extraction** (`make sql`):
 ```bash
 tshark -r /work/output/pg_capture.pcap \
     -Y pgsql.query \
@@ -1964,7 +1971,6 @@ tshark -r /work/output/pg_capture.pcap \
 - `-T fields` - output format: field values only
 - `-e pgsql.query` - extract the SQL text field
 
-##### What `pgsql.query` actually is
 
 `pgsql.query` isn't a parameter with options - it's a single named field
 exposed by Wireshark's `pgsql` dissector, holding the raw SQL text of a
@@ -2007,7 +2013,7 @@ docker exec bpf-pg-wireshark tshark -r /work/output/pg_capture.pcap \
     -E separator='|'
 ```
 
-**3. Filtered verbose decode** (`make decode FILTER="pgsql"`):
+**Filtered verbose decode** (`make decode FILTER="pgsql"`):
 ```bash
 tshark -r /work/output/pg_capture.pcap -Y pgsql -V
 ```
@@ -2061,8 +2067,7 @@ Two things to keep in mind while reading it:
 
 If you open the capture in a viewer that doesn't have a Postgres
 dissector at all (a generic pcap/hex viewer, rather than Wireshark or
-tshark), the first few data-carrying packets look like meaningless bytes
-- and it's easy to conclude the capture is broken or that no SQL was
+tshark), the first few data-carrying packets look like meaningless bytes - and it's easy to conclude the capture is broken or that no SQL was
 sent. It isn't broken; you're just looking at the handshake that always
 precedes any SQL. In order, on the wire:
 

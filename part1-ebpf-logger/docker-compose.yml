@@ -36,9 +36,7 @@ services:
     container_name: ebpf-wireshark
     depends_on:
       - packet-logger
-
     network_mode: host
-
     cap_add:
       - NET_ADMIN
       - NET_RAW
